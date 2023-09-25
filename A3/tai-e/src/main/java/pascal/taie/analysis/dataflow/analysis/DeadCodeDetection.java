@@ -33,21 +33,11 @@ import pascal.taie.analysis.graph.cfg.CFGBuilder;
 import pascal.taie.analysis.graph.cfg.Edge;
 import pascal.taie.config.AnalysisConfig;
 import pascal.taie.ir.IR;
-import pascal.taie.ir.exp.ArithmeticExp;
-import pascal.taie.ir.exp.ArrayAccess;
-import pascal.taie.ir.exp.CastExp;
-import pascal.taie.ir.exp.FieldAccess;
-import pascal.taie.ir.exp.NewExp;
-import pascal.taie.ir.exp.RValue;
-import pascal.taie.ir.exp.Var;
-import pascal.taie.ir.stmt.AssignStmt;
-import pascal.taie.ir.stmt.If;
-import pascal.taie.ir.stmt.Stmt;
-import pascal.taie.ir.stmt.SwitchStmt;
+import pascal.taie.ir.exp.*;
+import pascal.taie.ir.stmt.*;
+import pascal.taie.util.collection.Pair;
 
-import java.util.Comparator;
-import java.util.Set;
-import java.util.TreeSet;
+import java.util.*;
 
 public class DeadCodeDetection extends MethodAnalysis {
 
@@ -69,8 +59,99 @@ public class DeadCodeDetection extends MethodAnalysis {
                 ir.getResult(LiveVariableAnalysis.ID);
         // keep statements (dead code) sorted in the resulting set
         Set<Stmt> deadCode = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
-        // TODO - finish me
-        // Your task is to recognize dead code in ir and add it to deadCode
+
+        // Remove cfg unreachable code, unreachable branch and dead variable
+        Stmt entryStmt = cfg.getEntry();
+        Queue<Stmt> workList = new LinkedList<>();
+        Set<Stmt> visitedSet = new TreeSet<>(Comparator.comparing(Stmt::getIndex));
+
+        workList.add(entryStmt);
+        visitedSet.add(entryStmt);
+        while (!workList.isEmpty()) {
+            Stmt visitedStmt = workList.remove();
+            // Check if is a condition statement
+            // If visited statement is "if" or "switch", check the branch's reachability, or if the statement is a definition statement, check the dead variable
+            if (visitedStmt instanceof If ifStmt) {
+                ConditionExp condition = ifStmt.getCondition();
+                // Check if condition expression is a constant
+                CPFact constantsFact = constants.getInFact(ifStmt);
+                Value expValue = ConstantPropagation.evaluate(condition, constantsFact);
+                if (expValue.isConstant()) {
+                    int value = expValue.getConstant();
+                    Set<Edge<Stmt>> ifEdges = cfg.getOutEdgesOf(ifStmt);
+                    ifEdges.forEach(
+                            stmtEdge -> {
+                                if ((stmtEdge.getKind() == Edge.Kind.IF_TRUE && value == 1) || (
+                                        stmtEdge.getKind() == Edge.Kind.IF_FALSE && value == 0
+                                )) {
+                                    workList.add(stmtEdge.getTarget());
+                                    visitedSet.add(stmtEdge.getTarget());
+                                }
+                            }
+                    );
+                    continue;
+                }
+            } else if (visitedStmt instanceof SwitchStmt switchStmt) {
+                Var condition = switchStmt.getVar();
+                // Check if condition expression is a constant
+                CPFact constantsFact = constants.getInFact(switchStmt);
+                Value switchValue = constantsFact.get(condition);
+                if (switchValue.isConstant()) {
+                    List<Pair<Integer, Stmt>> caseTargets = switchStmt.getCaseTargets();
+                    Stmt targetCase = null;
+                    for (Pair<Integer, Stmt> target : caseTargets) {
+                        if (switchValue.getConstant() == target.first()) {
+                            targetCase = target.second();
+                            break;
+                        }
+                    }
+                    // If targetCase is not null, add it to the work list. Else, add the default
+                    if (targetCase != null) {
+                        workList.add(targetCase);
+                        visitedSet.add(targetCase);
+                    } else {
+                        Stmt defaultTarget = switchStmt.getDefaultTarget();
+                        if (defaultTarget != null) {
+                            workList.add(defaultTarget);
+                            visitedSet.add(defaultTarget);
+                        }
+                    }
+                    continue;
+                }
+            } else if (visitedStmt instanceof AssignStmt<?, ?> assignStmt) {
+                if (hasNoSideEffect(assignStmt.getRValue())){
+                    SetFact<Var> liveVarSet = liveVars.getOutFact(assignStmt);
+                    assignStmt.getDef().ifPresent(
+                            lValue -> {
+                                if (lValue instanceof Var lVar){
+                                    // If not alive, do not visit it.
+                                    if(!liveVarSet.contains(lVar)){
+                                        visitedSet.remove(visitedStmt);
+                                    }
+                                }
+                            }
+                    );
+                }
+            }
+            // Add all the successor to the work list.
+            cfg.getSuccsOf(visitedStmt).forEach(
+                    stmt -> {
+                        if (!visitedSet.contains(stmt)) {
+                            workList.add(stmt);
+                            visitedSet.add(stmt);
+                        }
+                    }
+            );
+        }
+        cfg.forEach(
+                stmt -> {
+                    if (!visitedSet.contains(stmt) && !cfg.isExit(stmt) && !cfg.isEntry(stmt)) {
+                        deadCode.add(stmt);
+                    }
+                }
+        );
+
+
         return deadCode;
     }
 

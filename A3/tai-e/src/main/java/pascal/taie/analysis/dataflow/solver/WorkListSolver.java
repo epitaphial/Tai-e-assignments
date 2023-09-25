@@ -26,6 +26,9 @@ import pascal.taie.analysis.dataflow.analysis.DataflowAnalysis;
 import pascal.taie.analysis.dataflow.fact.DataflowResult;
 import pascal.taie.analysis.graph.cfg.CFG;
 
+import java.util.ArrayList;
+import java.util.List;
+
 class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     WorkListSolver(DataflowAnalysis<Node, Fact> analysis) {
@@ -34,11 +37,67 @@ class WorkListSolver<Node, Fact> extends Solver<Node, Fact> {
 
     @Override
     protected void doSolveForward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        List<Node> workList = new ArrayList<>();
+        cfg.forEach(
+                node -> {
+                    if (!cfg.isEntry(node)){
+                        workList.add(node);
+                    }
+                }
+        );
+        while (!workList.isEmpty()) {
+            Node workNode = workList.get(0);
+            Fact targetFact = result.getInFact(workNode);
+            // Traverse the predecessor of current node and do meet.
+            cfg.getPredsOf(workNode).forEach(
+                    node -> analysis.meetInto(result.getOutFact(node), targetFact)
+            );
+
+            // Run transfer function.
+            if (analysis.transferNode(workNode, targetFact, result.getOutFact(workNode))) {
+                cfg.getSuccsOf(workNode).forEach(
+                        node -> {
+                            if (!workList.contains(node) && !cfg.isEntry(node)) {
+                                workList.add(node);
+                            }
+                        }
+                );
+            } else {
+                workList.remove(workNode);
+            }
+        }
     }
 
     @Override
     protected void doSolveBackward(CFG<Node> cfg, DataflowResult<Node, Fact> result) {
-        // TODO - finish me
+        List<Node> workList = new ArrayList<>();
+        cfg.forEach(
+                node -> {
+                    if (!cfg.isExit(node)){
+                        workList.add(node);
+                    }
+                }
+        );
+        while (!workList.isEmpty()) {
+            Node workNode = workList.get(0);
+            Fact targetFact = result.getOutFact(workNode);
+            // Traverse the predecessor of current node and do meet.
+            cfg.getSuccsOf(workNode).forEach(
+                    node -> analysis.meetInto(result.getInFact(node), targetFact)
+            );
+
+            // Run transfer function.
+            if (analysis.transferNode(workNode, result.getInFact(workNode),targetFact)) {
+                cfg.getPredsOf(workNode).forEach(
+                        node -> {
+                            if (!workList.contains(node) && !cfg.isExit(node)) {
+                                workList.add(node);
+                            }
+                        }
+                );
+            } else {
+                workList.remove(workNode);
+            }
+        }
     }
 }
